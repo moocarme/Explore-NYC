@@ -25,8 +25,13 @@ new.fdata <- felony.data %>% filter(Offense == 'ROBBERY') %>%
 
 new.fdata2 <- new.fdata %>%
   separate(`Location 1`, c('Lat_tmp', 'Long_tmp'),sep = ',') %>%
-  mutate(Lat = round(as.numeric(gsub("\\(|\\)","",Lat_tmp)), 3)) %>%
-  mutate(Long = round(as.numeric(gsub("\\(|\\)","",Long_tmp)), 3)) %>%
-    group_by(Long, Lat) %>% summarise(Count = n())
+  mutate(Lat = round(as.numeric(gsub("\\(|\\)","",Lat_tmp)), 2)) %>%
+  mutate(Long = round(as.numeric(gsub("\\(|\\)","",Long_tmp)), 2)) %>%
+  group_by(Long, Lat) %>% summarise(Count = n()) %>%
+  filter(Count > 10)
 
-ggmap()
+map <- get_map(location = 'New York City', zoom= 10,
+               source = 'google', color = 'color')
+
+map <- ggmap(map) + geom_point(data = new.fdata2, aes(x=Long, y=Lat), color= 'darkred', size = new.fdata2$Count/100)
+map +scale_size(range = c(0,1))
