@@ -1,67 +1,111 @@
+---
+title: "NYC Robberies Occur Near Schools at 3PM"
+author: "Matt Moocarme"
+date: "July 8, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE,
+                      cache = T,
+                      message = FALSE,
+                      comment = '')
+```
+
+## R Markdown
+
+Working from Ben Wellington's IQuantNY
+
+Load in libraries
+```{r }
 library(readr)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(ggmap)
 library(caret)
+```
 
-# Read in and filter data =======================================
+Next we read in the data
+```{r}
 felony.data <- read_csv('data/NYPD_7_Major_Felony_Incidents.csv')
 str(felony.data)
-colnames(felony.data)
-length(unique(felony.data$Identifier))
+```
+Tidy the data to look at weekday robberies via hour 
+```{r}
 tidy.fdata <- felony.data %>% filter(Offense == 'ROBBERY') %>% 
   select(Hour = `Occurrence Hour`,Day.Week = `Day of Week`) %>% 
   filter(!(Day.Week %in% c('Saturday', 'Sunday'))) %>%
   group_by(Hour) %>% summarise(Hourly.Crime.Rate= n())
 
+```
+
+Recreate plot from IQuantNY
+```{r}
 # Recreate plot from IQuantNY (roughly)
 ggplot(data = tidy.fdata) + geom_line(aes(x = Hour, y = Hourly.Crime.Rate)
                                       , color= 'darkgreen')
+```
 
-# Now look at just 3pm data
+Analyze data just at 3pm
+```{r}
 new.fdata <- felony.data %>% filter(Offense == 'ROBBERY') %>% 
   select(Hour = `Occurrence Hour`,Day.Week = `Day of Week`, `Location 1`) %>% 
   filter(!(Day.Week %in% c('Saturday', 'Sunday')), Hour =='15')
 
-
+```
+Read in school data
+```{r}
 # Read in school data ================================================
 schooldf <- read_csv('data/Location_Information_Report.csv')
 str(schooldf)
 unique(schooldf$`Location Category Description`)
-
+```
+Since I don't believe elementary schools, pre-K re commiting robberies I will just use those that schools that contain the elder students
+```{r}
 rel.schools <- c('High School', 'Secondary School', 'K-12 all grades')
 
 tidy.schooldf <- schooldf %>% select(`Location Name`, `Location Category Description`, Latitude, Longitude) %>%
   filter(`Location Category Description` %in% rel.schools)
-# 119 schools
+dim(tidy.schooldf)
+```
 
-
-
+Get long/lat coords from the felony data use regualr expressions
+```{r}
 new.fdata2 <- new.fdata %>%
   separate(`Location 1`, c('Lat_tmp', 'Long_tmp'),sep = ',') %>%
   mutate(Lat = as.numeric(gsub("\\(|\\)","", Lat_tmp))) %>%
   mutate(Long = as.numeric(gsub("\\(|\\)","", Long_tmp)))
 
+```
+Cluster the coords- choose 150 clusters - more than the number of schools
+```{r}
+set.seed(666)
 latlong_cluster <- kmeans(cbind(new.fdata2$Lat, new.fdata2$Long), centers  = 150)
+```
+
+bind new lat long coords, group by and summarise
+```{r}
 new.fdata3 <- cbind(new.fdata2, Cluster = latlong_cluster$cluster, 
                     Cluster.Lat = latlong_cluster$centers[latlong_cluster$cluster,1],
                     Cluster.Long = latlong_cluster$centers[latlong_cluster$cluster,2])
 
 new.fdata4 <- new.fdata3 %>% group_by(Cluster.Lat, Cluster.Long, Cluster) %>% summarise(Total.Counts= n())
 
+```
+Plot on map
 
-
+```{r}
 # = Plot on Map
 map <- get_map(location = 'New York City', zoom= 10,
                source = 'google', color = 'color')
-
-map <- ggmap(map) + geom_point(data = new.fdata4, aes(x=Cluster.Long, y=Cluster.Lat, color = new.fdata4$Total.Counts)
-                               , size = new.fdata4$Total.Counts/100) +
-  scale_color_gradient(low = 'red', high = 'yellow')
-map +scale_size(range = c(0,1))
-  map + geom_jitter(data = tidy.schooldf, aes(x= Longitude, y= Latitude), shape = 4)
-  
-write.csv(new.fdata4, file = 'felonyData_clustered.csv')
-write.csv(tidy.schooldf, file = 'schooldf.csv')
+map <- ggmap(map) + geom_point(data = new.fdata4, aes(x=Cluster.Long, y=Cluster.Lat, 
+                                                      color = new.fdata4$Total.Counts), 
+                               size = new.fdata4$Total.Counts/100) +
+  scale_color_gradient(low = 'red', high = 'yellow') + 
+  geom_jitter(data = tidy.schooldf, aes(x= Longitude, y= Latitude), shape = 4) +
+  labs(title = 'New York City', x = 'Longitude', y = 'Latitude') 
+map
+```
 
