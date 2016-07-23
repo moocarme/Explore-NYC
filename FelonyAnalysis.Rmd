@@ -25,6 +25,13 @@ library(tidyr)
 library(ggplot2)
 library(ggmap)
 library(caret)
+library(caret)
+library(sp)
+library(raster)
+library(rgdal)
+library(rgeos)
+library(spatstat)
+
 ```
 
 Next we read in the data
@@ -107,5 +114,144 @@ map <- ggmap(map) + geom_point(data = new.fdata4, aes(x=Cluster.Long, y=Cluster.
   geom_jitter(data = tidy.schooldf, aes(x= Longitude, y= Latitude), shape = 4) +
   labs(title = 'New York City', x = 'Longitude', y = 'Latitude') 
 map
+```
+
+load shape file
+```{r}
+# load shapefile and read in
+shp <-'../Data-Incubator-Challenge/Vision-Zero/nybb_16b/nybb.shp'
+ny <- readOGR(shp, ogrListLayers(shp)[1], stringsAsFactors=FALSE)
+map <- spTransform(ny, CRS("+proj=longlat +datum=WGS84"))
+
+```
+
+Check 400 randompoints
+```{r}
+num.Rands_test = 400 # number of random numbers
+# Outer longitude, latitude limits of NYC
+long.Min_test = -74.2; long.Max_test = -73.65
+lat.Min_test = 40.4; lat.Max_test = 40.95
+# generate random numbers
+random.Longs_test = runif(num.Rands_test, long.Min_test, long.Max_test)
+random.Lats_test = runif(num.Rands_test, lat.Min_test, lat.Max_test)
+
+# convert to dataframe 
+dat_test <- data.frame(Longitude = random.Longs_test,
+                  Latitude  = random.Lats_test)
+LongLats_test <- dat_test
+# convert to coordinates
+coordinates(dat_test) <- ~ Longitude + Latitude
+# Set the projection of the SpatialPointsDataFrame using the projection of the shapefile
+proj4string(dat_test) <- proj4string(map)
+
+# select points only over manhattan boundry
+rand.points_test <- cbind(over(dat_test, map), LongLats_test) %>% 
+  filter(!is.na(BoroName)) %>%
+  dplyr::select(Latitude, Longitude)
+
+nycmap <- get_googlemap('maspeth NYC', zoom = 11)
+ggmap(nycmap) + geom_point(data = rand.points_test, aes(x = Longitude, y= Latitude))
+
+```
+
+10000 random points
+```{r}
+num.Rands = 10000 # number of random numbers
+# Outer longitude, latitude limits of NYC
+long.Min = -74.2; long.Max = -73.65
+lat.Min = 40.4; lat.Max = 40.95
+# generate random numbers
+random.Longs = runif(num.Rands, long.Min, long.Max)
+random.Lats = runif(num.Rands, lat.Min, lat.Max)
+
+# convert to dataframe 
+dat <- data.frame(Longitude = random.Longs,
+                  Latitude  = random.Lats)
+LongLats <- dat
+# convert to coordinates
+coordinates(dat) <- ~ Longitude + Latitude
+# Set the projection of the SpatialPointsDataFrame using the projection of the shapefile
+proj4string(dat) <- proj4string(map)
+
+# select points only over manhattan boundry
+rand.points <- cbind(over(dat, map), LongLats) %>% 
+  filter(!is.na(BoroName)) %>%
+  dplyr::select(Latitude, Longitude)
+
+```
+
+```{r}
+# Use approx from http://www.movable-type.co.uk/scripts/latlong.html
+# average kms in a lat or long degree
+ave.km.per.Lat.NY <- 111.2
+ave.km.per.Long.NY <- 84.24
+
+tidy.schooldf<- filter(tidy.schooldf, !is.na(Latitude) & !is.na(Longitude))
+# Convert data frames to lists for calculating geographical distances
+felony_df_lst <- structure(list(lon = new.fdata2$Long*ave.km.per.Long.NY, 
+                                 lat = new.fdata2$Lat*ave.km.per.Lat.NY),
+                            .Names = c("lon", "lat"), 
+                            row.names = c(NA, as.integer(nrow(new.fdata2))), 
+                            class = "data.frame")
+
+school_df_lst <- structure(list(name = tidy.schooldf$`Location Name`,
+                                lon = tidy.schooldf$Longitude*ave.km.per.Long.NY, 
+                                lat = tidy.schooldf$Latitude*ave.km.per.Lat.NY),
+                           .Names = c("lon", "lat"), 
+                           row.names = c(NA, as.integer(nrow(tidy.schooldf))), 
+                           class = "data.frame")
+
+rand.points_lst <- structure(list(lon = rand.points$Longitude*ave.km.per.Long.NY, 
+                                  lat = rand.points$Latitude*ave.km.per.Lat.NY),
+                             .Names = c("lon", "lat"), row.names = c(NA, nrow(rand.points)), 
+                             class = "data.frame")
+
+felony_df_sp <- SpatialPoints(felony_df_lst)
+school_df_sp <- SpatialPoints(school_df_lst[,2:3])
+rand.points_sp <- SpatialPoints(rand.points_lst)
+
+rand.points_lst$nearest.school <- apply(gDistance(rand.points_sp, 
+                                                        school_df_sp, byid=TRUE), 2, min)
+felony_df_lst$nearest.school <- apply(gDistance(felony_df_sp, school_df_sp, byid=TRUE), 2, which.min)
+
+felony_df_lst$which.school <- school_df_lst[apply(gDistance(felony_df_sp, school_df_sp, byid=TRUE), 2, which.min),1]
+
+top.schools.robbery <- felony_df_lst %>% 
+  dplyr::group_by(which.school) %>%
+  dplyr::summarise(robbery.count = n()) %>%
+  dplyr::arrange(desc(robbery.count))
+
+head(top.schools.robbery, n=10)
+
+rand_min_Dists_df <- data.frame(dists = rand.points_lst$nearest.school*1000)
+felony_min_Dists_df <- data.frame(dists = felony_df_lst$nearest.school*1000)
+
+mean.Randpts2school <- mean(log(rand_min_Dists_df$dists))
+mean.felony2school <- mean(log(felony_min_Dists_df$dists))
+
+mean(rand_min_Dists_df$dists)
+mean(felony_min_Dists_df$dists)
+
+ggplot() + 
+  geom_histogram(data = log(rand_min_Dists_df), 
+                 aes(x = dists, y=..count../sum(..count..), fill= 'green', color = 'green'), 
+                 fill = "green", alpha = 0.2, bins = 70) +
+  geom_histogram(data = log(felony_min_Dists_df), 
+                 aes(x = dists, y=..count../sum(..count..), fill= 'red', color = 'red'), 
+                 fill = "red",  alpha = 0.2, bins = 70) + 
+  geom_vline(xintercept = (mean.Randpts2school), color = 'green') +
+  geom_vline(xintercept = (mean.felony2school), color = 'red') +
+  labs(list(y = 'Normalized Count', x = 'Log distance(m)')) +
+  # ylim(c(0, 0.042)) +
+  scale_colour_manual(name="group", values=c("red" = "red", "green"="green"), 
+                      labels=c("green"="Random Uniform Distribution", "red"="Robbery Distribution")) +
+  scale_fill_manual(name="group", values=c("red" = "red", "green"="green"), 
+                    labels=c("green"="Random Uniform Distribution", "red"="Robbery Distribution"))
+
+```
+ttest
+```{r}
+t.test(rand_min_Dists_df, felony_min_Dists_df)
+
 ```
 
